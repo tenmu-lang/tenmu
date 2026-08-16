@@ -387,14 +387,14 @@ struct CPoint { x: f64, y: f64 }
 
 `tm`コマンド一本で完結させる（コンパイラの診断メッセージ・CLI出力・`tm doc`が生成するドキュメントは英語を既定とする。ソースコード中のユーザー定義識別子自体はUnicodeを許容）。
 
-- `tm build` $2014 コンパイル
-- `tm run` $2014 コンパイル+即実行
-- `tm test` $2014 `#[test]`関数の実行
-- `tm fmt` $2014 標準フォーマッタ（`gofmt`同様、スタイルの選択余地なし）
-- `tm doc` $2014 `///`コメントからドキュメント生成
-- `tm get <path>@<version>` $2014 依存を追加/更新（Go方式、VCSから直接取得）
-- `tm mod tidy` $2014 `tenmu.toml`の`[require]`を実際の使用状況に合わせて整理
-- `tm mod verify` $2014 `tenmu.sum`と照合し依存の改ざん・破損を検知
+- `tm build` - コンパイル
+- `tm run` - コンパイル+即実行
+- `tm test` - `#[test]`関数の実行
+- `tm fmt` - 標準フォーマッタ（`gofmt`同様、スタイルの選択余地なし）
+- `tm doc` - `///`コメントからドキュメント生成
+- `tm get <path>@<version>` - 依存を追加/更新（Go方式、VCSから直接取得）
+- `tm mod tidy` - `tenmu.toml`の`[require]`を実際の使用状況に合わせて整理
+- `tm mod verify` - `tenmu.sum`と照合し依存の改ざん・破損を検知
 
 ---
 
