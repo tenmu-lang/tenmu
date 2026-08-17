@@ -7,7 +7,8 @@
 /* x86-64 GPR番号(標準エンコーディング) */
 enum { RAX=0, RCX=1, RDX=2, RBX=3, RSP=4, RBP=5, RSI=6, RDI=7, R8=8, R9=9 };
 
-static const int ARG_REGS[6] = { RDI, RSI, RDX, RCX, R8, R9 };
+static const int ARG_REGS_LINUX[6]   = { RDI, RSI, RDX, RCX, R8, R9 };
+static const int ARG_REGS_WINDOWS[4] = { RCX, RDX, R8, R9 };
 
 /* ===== CodeBuf ===== */
 static void buf_init(CodeBuf *b) { b->data = NULL; b->len = 0; b->cap = 0; }
@@ -112,17 +113,21 @@ static void emit_jmp_placeholder(CodeBuf *b, unsigned char opcode1, int opcode2,
     buf_u32(b, 0); /* プレースホルダ、後で解決する */
 }
 
-static int frame_size_for(int vreg_count) {
+static int frame_size_for(int vreg_count, CodegenTarget target) {
     int bytes = (vreg_count > 0 ? vreg_count : 1) * 8;
+    if (target == CG_TARGET_WINDOWS) bytes += 32; /* 呼び出し規約上必須のシャドウスペース */
     return (bytes + 15) & ~15; /* 16バイト境界に切り上げ(呼び出し時のスタック整列のため) */
 }
 
-CodegenResult codegen_program(IrProgram *prog) {
+CodegenResult codegen_program(IrProgram *prog, CodegenTarget target) {
     CodegenResult res; memset(&res, 0, sizeof(res));
     buf_init(&res.code);
     res.func_offsets = xmalloc(sizeof(FuncOffset) * (size_t)(prog->func_count ? prog->func_count : 1));
     res.func_offset_count = prog->func_count;
     res.entry_func_index = ir_find_func(prog, "main");
+
+    const int *arg_regs = target == CG_TARGET_WINDOWS ? ARG_REGS_WINDOWS : ARG_REGS_LINUX;
+    int max_reg_args = target == CG_TARGET_WINDOWS ? 4 : 6;
 
     DynArray fixups; dynarray_init(&fixups, sizeof(Fixup)); /* call先(関数間、全体解決) */
 
@@ -134,7 +139,7 @@ CodegenResult codegen_program(IrProgram *prog) {
         DynArray labels; dynarray_init(&labels, sizeof(LabelOffset));
         DynArray local_fixups; dynarray_init(&local_fixups, sizeof(Fixup)); /* ラベル(関数内で完結) */
 
-        int frame = frame_size_for(f->vreg_count);
+        int frame = frame_size_for(f->vreg_count, target);
 
         emit_push(&res.code, RBP);
         emit_mov_rr(&res.code, RBP, RSP);
@@ -152,8 +157,8 @@ CodegenResult codegen_program(IrProgram *prog) {
                     emit_store_slot(&res.code, ins->dst, RAX);
                     break;
                 case IR_PARAM:
-                    if (ins->imm < 6) emit_mov_rr(&res.code, RAX, ARG_REGS[ins->imm]);
-                    else emit_mov_ri64(&res.code, RAX, 0); /* 7個目以降の引数は本バックエンド未対応 */
+                    if (ins->imm < max_reg_args) emit_mov_rr(&res.code, RAX, arg_regs[ins->imm]);
+                    else emit_mov_ri64(&res.code, RAX, 0); /* レジスタ渡し数を超える引数は本バックエンド未対応 */
                     emit_store_slot(&res.code, ins->dst, RAX);
                     break;
                 case IR_ADD: case IR_SUB: case IR_AND: case IR_OR: case IR_XOR: {
@@ -210,8 +215,8 @@ CodegenResult codegen_program(IrProgram *prog) {
                     break;
                 }
                 case IR_CALL: {
-                    int nargs = ins->arg_count < 6 ? ins->arg_count : 6;
-                    for (int a = 0; a < nargs; a++) emit_load_slot(&res.code, ARG_REGS[a], ins->args[a]);
+                    int nargs = ins->arg_count < max_reg_args ? ins->arg_count : max_reg_args;
+                    for (int a = 0; a < nargs; a++) emit_load_slot(&res.code, arg_regs[a], ins->args[a]);
                     emit_jmp_placeholder(&res.code, 0xE8, -1, &fixups, 1, ins->call_func, 0);
                     emit_store_slot(&res.code, ins->dst, RAX);
                     break;
