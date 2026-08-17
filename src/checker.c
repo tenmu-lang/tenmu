@@ -140,7 +140,42 @@ static SemType *resolve_type(Checker *ck, Scope *sc, Type *t) {
     }
 }
 
-/* ===== 式の検査 ===== */
+/* ===== 所有権/借用チェック ===== */
+
+/* Copyとして暗黙コピーされる型か(プリミティブ・ポインタ・参照・ビュー系)。
+   構造体/enum/String等の所有型はムーブ対象。 */
+static int is_copy_type(SemType *t) {
+    if (!t) return 1;
+    switch (t->kind) {
+        case ST_STRUCT: case ST_ENUM: case ST_ERROR: case ST_UNION:
+        case ST_STRING: case ST_TUPLE: case ST_ARRAY:
+            return 0;
+        default:
+            return 1; /* プリミティブ・PTR/REF/STR/SLICE/TENSOR/UNKNOWN/EXTERNAL等は寛容にCopy扱い */
+    }
+}
+
+/* borrowを解放する(let r=&x の r が所属スコープを抜ける時に呼ぶ) */
+static void release_borrow(Symbol *target, int was_mut) {
+    if (!target) return;
+    if (was_mut) target->mutable_borrow = 0;
+    else if (target->shared_borrows > 0) target->shared_borrows--;
+}
+
+/* 式eが単純な識別子xそのものであれば、それをbyvalue(ムーブ)使用として扱い、
+   moved/borrow状態を検査・更新する。参照やフィールドアクセス等はここでは
+   何もしない(ムーブの対象は単純束縛のみという保守的な近似)。 */
+static void check_move_use(Checker *ck, Scope *sc, Expr *e) {
+    if (!e || e->kind != EX_IDENT) return;
+    Symbol *sym = scope_lookup(sc, e->str, e->str_len);
+    if (!sym || (sym->kind != SYM_LOCAL && sym->kind != SYM_PARAM)) return;
+    if (is_copy_type(sym->type)) return;
+    if (sym->shared_borrows > 0 || sym->mutable_borrow) {
+        check_errorf(ck, e->line, e->col, "cannot move out of '%.*s' because it is borrowed", (int)e->str_len, e->str);
+        return;
+    }
+    sym->moved = 1;
+}
 
 static int is_bool_incompatible(SemType *t) {
     if (!t) return 0;
@@ -156,6 +191,12 @@ static SemType *check_block(Checker *ck, Scope *parent, Expr *block) {
         if (i == block->stmt_count - 1 && block->stmts[i]->kind == ST_EXPR) {
             last = check_expr(ck, sc, block->stmts[i]->expr);
         }
+    }
+    /* このブロックで宣言された変数が持つ借用(let r=&x等)を解放する。
+       rはこのスコープを抜けたら二度と参照できないため、xの借用も安全に解放できる。 */
+    for (int i = 0; i < sc->count; i++) {
+        Symbol *s = sc->symbols[i];
+        if (s->borrows_from) release_borrow(s->borrows_from, s->borrow_is_mut);
     }
     return last;
 }
@@ -203,6 +244,9 @@ static SemType *check_expr(Checker *ck, Scope *sc, Expr *e) {
                 check_errorf(ck, e->line, e->col, "undefined name '%.*s'", (int)nl, nm);
                 return semtype_unknown();
             }
+            if ((sym->kind == SYM_LOCAL || sym->kind == SYM_PARAM) && sym->moved) {
+                check_errorf(ck, e->line, e->col, "use of moved value '%.*s'", (int)nl, nm);
+            }
             switch (sym->kind) {
                 case SYM_LOCAL: case SYM_PARAM: return sym->type ? sym->type : semtype_unknown();
                 case SYM_GENERIC_PARAM: { SemType *g = semtype_new(ST_GENERIC_PARAM); g->name = (char *)sym->name; return g; }
@@ -245,6 +289,19 @@ static SemType *check_expr(Checker *ck, Scope *sc, Expr *e) {
                 return semtype_unknown();
             }
             if (e->str[0] == '&') {
+                if (e->a->kind == EX_IDENT) {
+                    Symbol *tsym = scope_lookup(sc, e->a->str, e->a->str_len);
+                    if (tsym && (tsym->kind == SYM_LOCAL || tsym->kind == SYM_PARAM)) {
+                        int want_mut = strcmp(e->str, "&mut") == 0;
+                        if (want_mut && (tsym->shared_borrows > 0 || tsym->mutable_borrow)) {
+                            check_errorf(ck, e->line, e->col, "cannot borrow '%.*s' as mutable because it is already borrowed",
+                                         (int)e->a->str_len, e->a->str);
+                        } else if (!want_mut && tsym->mutable_borrow) {
+                            check_errorf(ck, e->line, e->col, "cannot borrow '%.*s' as immutable because it is already borrowed as mutable",
+                                         (int)e->a->str_len, e->a->str);
+                        }
+                    }
+                }
                 SemType *r = semtype_new(ST_REF);
                 r->is_mut = strcmp(e->str, "&mut") == 0;
                 r->inner = a;
@@ -254,8 +311,26 @@ static SemType *check_expr(Checker *ck, Scope *sc, Expr *e) {
         }
 
         case EX_ASSIGN: {
-            SemType *lhs = check_expr(ck, sc, e->a);
+            /* 代入の左辺は「書き込み対象」であり「読み出し」ではないため、
+               単純識別子の場合はmoved検査を経由せず型だけを取得する。
+               x.field = ... や arr[i] = ... のような複合左辺は、土台(x/arr)を
+               読む必要があるため通常通りcheck_exprを通す。 */
+            SemType *lhs;
+            Symbol *lsym = NULL;
+            if (e->a->kind == EX_IDENT) {
+                lsym = scope_lookup(sc, e->a->str, e->a->str_len);
+                if (!lsym) {
+                    check_errorf(ck, e->a->line, e->a->col, "undefined name '%.*s'", (int)e->a->str_len, e->a->str);
+                    lhs = semtype_unknown();
+                } else {
+                    lhs = (lsym->kind == SYM_LOCAL || lsym->kind == SYM_PARAM) ? lsym->type : semtype_unknown();
+                }
+            } else {
+                lhs = check_expr(ck, sc, e->a);
+            }
             SemType *rhs = check_expr(ck, sc, e->b);
+            check_move_use(ck, sc, e->b);
+            if (lsym && (lsym->kind == SYM_LOCAL || lsym->kind == SYM_PARAM)) lsym->moved = 0;
             if (!semtype_compatible(lhs, rhs)) {
                 char bl[64], br[64];
                 semtype_format(lhs, bl, sizeof(bl)); semtype_format(rhs, br, sizeof(br));
@@ -285,6 +360,7 @@ static SemType *check_expr(Checker *ck, Scope *sc, Expr *e) {
                     for (int i = 0; i < n; i++) {
                         SemType *argt = check_expr(ck, sc, e->list[i]);
                         SemType *want = fn->params[i].type ? resolve_type(ck, sc, fn->params[i].type) : semtype_unknown();
+                        if (!want || want->kind != ST_REF) check_move_use(ck, sc, e->list[i]);
                         if (!semtype_compatible(want, argt)) {
                             char bw[64], bg[64];
                             semtype_format(want, bw, sizeof(bw)); semtype_format(argt, bg, sizeof(bg));
@@ -490,11 +566,26 @@ static void check_stmt(Checker *ck, Scope *sc, Stmt *s) {
             Symbol *sym = scope_declare(sc, SYM_LOCAL, s->name, strlen(s->name), s->line, s->col);
             sym->type = final_t;
             sym->is_mut = s->is_mut;
+
+            /* let r = &x / let r = &mut x: 借用元xの借用状態をrのスコープ終了まで持続させる */
+            if (s->expr && s->expr->kind == EX_UNARY && s->expr->a->kind == EX_IDENT &&
+                (s->expr->str[0] == '&')) {
+                Symbol *target = scope_lookup(sc, s->expr->a->str, s->expr->a->str_len);
+                if (target && (target->kind == SYM_LOCAL || target->kind == SYM_PARAM)) {
+                    int want_mut = strcmp(s->expr->str, "&mut") == 0;
+                    if (want_mut) target->mutable_borrow = 1; else target->shared_borrows++;
+                    sym->borrows_from = target;
+                    sym->borrow_is_mut = want_mut;
+                }
+            } else {
+                check_move_use(ck, sc, s->expr);
+            }
             return;
         }
         case ST_EXPR: check_expr(ck, sc, s->expr); return;
         case ST_RETURN: {
             SemType *rt = s->expr ? check_expr(ck, sc, s->expr) : semtype_primitive(ST_VOID);
+            if (s->expr) check_move_use(ck, sc, s->expr);
             if (ck->current_fn_return && !semtype_compatible(ck->current_fn_return, rt)) {
                 char be[64], ba[64];
                 semtype_format(ck->current_fn_return, be, sizeof(be)); semtype_format(rt, ba, sizeof(ba));

@@ -17,6 +17,15 @@ typedef struct Symbol {
     SemType *type;    /* SYM_LOCAL/PARAM: 変数の型。SYM_FN: 未使用(item経由でシグネチャを見る) */
     int is_mut;
     int line, col;
+
+    /* 所有権/借用チェック用の状態(Stage 2後半)。SYM_LOCAL/SYM_PARAMのみ使う。 */
+    int moved;               /* ムーブ済みで以後読み出し不可か */
+    int shared_borrows;       /* このシンボルに対して現在有効な共有借用(&)の数 */
+    int mutable_borrow;        /* このシンボルに対して現在有効な可変借用(&mut)があるか */
+    struct Symbol *borrows_from; /* このシンボル自身が「let r = &x」等で作られた
+                                     参照である場合、借用元xのSymbol。所属スコープの
+                                     終了時にxの借用状態を解放するために使う。 */
+    int borrow_is_mut;
 } Symbol;
 
 typedef struct Scope {
