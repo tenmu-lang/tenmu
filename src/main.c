@@ -3,6 +3,10 @@
    検査し、トップレベル宣言の一覧を報告するところまでを担う。
    意味解析・コード生成はStage 2以降で追加する。 */
 #include "parser.h"
+#include "checker.h"
+#include "irgen.h"
+#include "codegen.h"
+#include "elf.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,13 +41,63 @@ static const char *item_kind_str(ItemKind k) {
 
 static void print_usage(const char *prog) {
     fprintf(stderr,
-        "tmc0 — Tenmu bootstrap compiler (Stage 1: frontend only)\n"
-        "usage: %s <command> <file.tm>\n"
+        "tmc0 — Tenmu bootstrap compiler (Stage 1-3: frontend, semantic analysis, native codegen)\n"
+        "usage: %s <command> <file.tm> [-o output]\n"
         "commands:\n"
-        "  check   parse the file and report syntax errors (default)\n"
+        "  check   parse + name/type-check the file, report errors (default)\n"
         "  items   parse the file and list its top-level items\n"
-        "  tokens  dump the raw token stream\n",
+        "  tokens  dump the raw token stream\n"
+        "  build   compile to a native x86-64 Linux executable (-o to name it)\n"
+        "note: build only supports functions whose params/return are scalar integer\n"
+        "      or bool types (no structs/strings/generics yet) — see README.\n",
         prog);
+}
+
+static int cmd_build(const char *path, const char *out_path) {
+    size_t len;
+    char *src = read_file(path, &len);
+    if (!src) return 1;
+
+    Parser p;
+    parser_init(&p, src, len);
+    Program *prog = parser_parse_program(&p);
+    if (p.had_error) {
+        fprintf(stderr, "%s:%d:%d: error: %s\n", path, p.error_line, p.error_col, p.error_msg);
+        return 1;
+    }
+
+    Checker ck;
+    checker_init(&ck);
+    check_program(&ck, prog);
+    for (int i = 0; i < ck.error_count; i++)
+        fprintf(stderr, "%s:%d:%d: error: %s\n", path, ck.errors[i].line, ck.errors[i].col, ck.errors[i].msg);
+    if (ck.total_error_count > 0) {
+        fprintf(stderr, "tmc0: %d error(s), not compiling\n", ck.total_error_count);
+        return 1;
+    }
+
+    LowerResult lr = lower_program(prog);
+    for (int i = 0; i < lr.skipped_count; i++)
+        fprintf(stderr, "tmc0: note: '%s' not compiled to native code (%s)\n", lr.skipped[i].fn_name, lr.skipped[i].reason);
+
+    int main_idx = ir_find_func(lr.ir, "main");
+    if (main_idx < 0) {
+        fprintf(stderr, "tmc0: no compilable 'main' function found (its signature may use unsupported types)\n");
+        return 1;
+    }
+
+    CodegenResult cg = codegen_program(lr.ir);
+    size_t main_offset = 0;
+    for (int i = 0; i < cg.func_offset_count; i++)
+        if (strcmp(cg.func_offsets[i].name, "main") == 0) { main_offset = cg.func_offsets[i].offset; break; }
+
+    if (elf_write_executable(out_path, cg.code.data, cg.code.len, main_offset) != 0) {
+        fprintf(stderr, "tmc0: failed to write '%s'\n", out_path);
+        return 1;
+    }
+    fprintf(stderr, "tmc0: wrote %s (%zu bytes of code, %d function(s) compiled)\n",
+            out_path, cg.code.len, cg.func_offset_count);
+    return 0;
 }
 
 static int cmd_tokens(const char *path) {
@@ -96,15 +150,24 @@ int main(int argc, char **argv) {
 
     const char *cmd;
     const char *path;
-    if (argc >= 3 && (strcmp(argv[1], "check") == 0 || strcmp(argv[1], "items") == 0 || strcmp(argv[1], "tokens") == 0)) {
+    int arg_start;
+    if (argc >= 3 && (strcmp(argv[1], "check") == 0 || strcmp(argv[1], "items") == 0 ||
+                      strcmp(argv[1], "tokens") == 0 || strcmp(argv[1], "build") == 0)) {
         cmd = argv[1];
         path = argv[2];
+        arg_start = 3;
     } else {
         cmd = "check";
         path = argv[1];
+        arg_start = 2;
     }
 
     if (strcmp(cmd, "tokens") == 0) return cmd_tokens(path);
     if (strcmp(cmd, "items") == 0) return cmd_check_or_items(path, 1);
+    if (strcmp(cmd, "build") == 0) {
+        const char *out_path = "a.out";
+        for (int i = arg_start; i < argc - 1; i++) if (strcmp(argv[i], "-o") == 0) out_path = argv[i + 1];
+        return cmd_build(path, out_path);
+    }
     return cmd_check_or_items(path, 0);
 }
