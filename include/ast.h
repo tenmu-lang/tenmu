@@ -127,7 +127,7 @@ struct Stmt {
 };
 
 /* ===== 宣言(アイテム) ===== */
-typedef enum { IT_MODULE, IT_IMPORT, IT_FN, IT_STRUCT, IT_ENUM, IT_UNION, IT_TRAIT, IT_IMPL, IT_ERROR } ItemKind;
+typedef enum { IT_MODULE, IT_IMPORT, IT_FN, IT_STRUCT, IT_ENUM, IT_UNION, IT_TRAIT, IT_IMPL, IT_ERROR, IT_CONST } ItemKind;
 
 typedef struct { char *name; Type *type; Expr *default_value; } Param;
 typedef struct { char *name; int is_const; Type *const_type; Type **bounds; int bound_count; } GenericParam;
@@ -169,6 +169,10 @@ struct Item {
     Item **methods; int method_count;
     Type *impl_type;
     Type *impl_trait_type;   /* impl Trait for Type の Trait 部分。無ければNULL */
+
+    /* IT_CONST */
+    Type *const_type;   /* 型注釈(必須) */
+    Expr *const_value;   /* 初期化式(comptime評価される) */
 };
 
 typedef struct { Item **items; int item_count; } Program;
