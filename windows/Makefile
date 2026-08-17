@@ -1,7 +1,7 @@
-CC       = gcc
+CC = C:/msys64/ucrt64/bin/gcc.exe
 CFLAGS   = -std=c11 -Wall -Wextra -Iinclude -O2
-LLVM_CFLAGS = -I"C:/Program Files/LLVM/include" -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
-LLVM_LIBS   = -lLLVM-18
+LLVM_CFLAGS = -I"C:/msys64/ucrt64/include" -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+LLVM_LIBS   = -L/ucrt64/lib -lLLVM-22
 BUILD    = build
 
 SRC      = src/lexer.c src/parser.c src/util.c src/checker.c src/semtype.c src/symtab.c src/comptime.c src/ir.c src/irgen.c src/codegen.c src/elf.c src/pe.c
