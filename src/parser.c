@@ -878,7 +878,7 @@ static Stmt *parse_stmt(Parser *p) {
     }
     if (check(p, TOK_FN) || check(p, TOK_STRUCT) || check(p, TOK_ENUM) || check(p, TOK_TRAIT) ||
         check(p, TOK_IMPL) || check(p, TOK_ERROR) || check(p, TOK_UNION) || check(p, TOK_HASHBRACKET) ||
-        check(p, TOK_PUB) || check(p, TOK_COMPTIME)) {
+        check(p, TOK_PUB) || check(p, TOK_COMPTIME) || check(p, TOK_CONST)) {
         Stmt *s = new_stmt_at(t.line, t.col, ST_ITEM);
         s->item = parse_item(p);
         return s;
@@ -1096,6 +1096,17 @@ static void parse_import_body(Parser *p, Item *item) {
     }
 }
 
+static void parse_const_body(Parser *p, Item *item) {
+    item->kind = IT_CONST;
+    advance_tok(p); /* 'const' */
+    Token name = expect(p, TOK_IDENT, "constant name");
+    item->name = token_dup(name);
+    expect(p, TOK_COLON, "':' (const declarations require a type annotation)");
+    item->const_type = parse_type(p);
+    expect(p, TOK_EQ, "'=' in const declaration");
+    item->const_value = parse_expr(p);
+}
+
 static Item *parse_item(Parser *p) {
     int line = p->cur.line, col = p->cur.col;
     DynArray attrs; dynarray_init(&attrs, sizeof(Attribute));
@@ -1123,6 +1134,7 @@ static Item *parse_item(Parser *p) {
     }
 
     if (check(p, TOK_FN))     { parse_fn_body(p, item); return item; }
+    if (check(p, TOK_CONST))  { parse_const_body(p, item); return item; }
     if (check(p, TOK_STRUCT)) { parse_struct_body(p, item); return item; }
     if (check(p, TOK_ENUM))   { parse_enum_body(p, item, IT_ENUM); return item; }
     if (check(p, TOK_ERROR))  { parse_enum_body(p, item, IT_ERROR); return item; }

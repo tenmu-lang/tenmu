@@ -30,7 +30,7 @@ static const char *item_kind_str(ItemKind k) {
     switch (k) {
         case IT_MODULE: return "module"; case IT_IMPORT: return "import"; case IT_FN: return "fn";
         case IT_STRUCT: return "struct"; case IT_ENUM: return "enum"; case IT_UNION: return "union";
-        case IT_TRAIT: return "trait"; case IT_IMPL: return "impl"; case IT_ERROR: return "error";
+        case IT_TRAIT: return "trait"; case IT_IMPL: return "impl"; case IT_ERROR: return "error"; case IT_CONST: return "const";
         default: return "?";
     }
 }
